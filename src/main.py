@@ -32,9 +32,9 @@ class SubFinder:
                     self.console.print_error(f"Error in {source.name} for {domain}: {str(e)}")
                     return set()
                 self.console.print(f"Retrying {source.name} for {domain} ({attempt + 1}/{retries})")
-                time.sleep(2)  # Increased delay for rate limits
+                time.sleep(2)
 
-    def save_subdomains(self, subdomains, output_file):  # Made synchronous
+    def save_subdomains(self, subdomains, output_file):
         if subdomains:
             os.makedirs(os.path.dirname(output_file) or '.', exist_ok=True)
             with open(output_file, "a", encoding="utf-8") as f:

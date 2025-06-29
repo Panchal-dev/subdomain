@@ -5,7 +5,7 @@ import os
 import asyncio
 import json
 
-app = Flask(__name__)
+flask_app = Flask(__name__)
 
 class TelegramBot:
     def __init__(self, bot_token, chat_id, subfinder):
@@ -17,7 +17,6 @@ class TelegramBot:
         self.cancel_event = asyncio.Event()
         self.last_message_id = None
         self.setup_handlers()
-        self.flask_app = app
         self.setup_webhook()
 
     def setup_handlers(self):
@@ -28,11 +27,16 @@ class TelegramBot:
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
 
     def setup_webhook(self):
-        @self.flask_app.route(f"/{self.bot_token}", methods=["POST"])
-        async def webhook():
-            update = Update.de_json(json.loads(request.get_data(as_text=True)), self.app.bot)
-            await self.app.process_update(update)
-            return "OK", 200
+        @flask_app.route(f"/{self.bot_token}", methods=["POST"])
+        def webhook():
+            try:
+                update = Update.de_json(request.get_json(), self.app.bot)
+                if update:
+                    asyncio.run_coroutine_threadsafe(self.app.process_update(update), self.app.loop)
+                return "OK", 200
+            except Exception as e:
+                print(f"Webhook error: {str(e)}")
+                return "Error", 500
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
@@ -121,4 +125,4 @@ class TelegramBot:
 
     def run(self):
         port = int(os.getenv("PORT", 8080))
-        self.flask_app.run(host="0.0.0.0", port=port)
+        flask_app.run(host="0.0.0.0", port=port)
