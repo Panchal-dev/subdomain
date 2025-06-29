@@ -1,7 +1,11 @@
 ﻿from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from flask import Flask, request
 import os
 import asyncio
+import json
+
+app = Flask(__name__)
 
 class TelegramBot:
     def __init__(self, bot_token, chat_id, subfinder):
@@ -12,6 +16,23 @@ class TelegramBot:
         self.is_running = False
         self.cancel_event = asyncio.Event()
         self.last_message_id = None
+        self.setup_handlers()
+        self.flask_app = app
+        self.setup_webhook()
+
+    def setup_handlers(self):
+        self.app.add_handler(CommandHandler("start", self.start))
+        self.app.add_handler(CommandHandler("cmd", self.cmd))
+        self.app.add_handler(CommandHandler("status", self.status))
+        self.app.add_handler(CommandHandler("cancel", self.cancel))
+        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
+
+    def setup_webhook(self):
+        @self.flask_app.route(f"/{self.bot_token}", methods=["POST"])
+        async def webhook():
+            update = Update.de_json(json.loads(request.get_data(as_text=True)), self.app.bot)
+            await self.app.process_update(update)
+            return "OK", 200
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
@@ -79,7 +100,6 @@ class TelegramBot:
                 if not domains:
                     await update.message.reply_text("No valid input provided.")
                     return
-                # Removed redundant message to avoid duplicates
                 await self.subfinder.run_async(domains, is_file=False, cancel_event=self.cancel_event)
         finally:
             self.is_running = False
@@ -100,10 +120,5 @@ class TelegramBot:
             print(f"Error sending Telegram file: {str(e)}")
 
     def run(self):
-        self.app.add_handler(CommandHandler("start", self.start))
-        self.app.add_handler(CommandHandler("cmd", self.cmd))
-        self.app.add_handler(CommandHandler("status", self.status))
-        self.app.add_handler(CommandHandler("cancel", self.cancel))
-        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
-        print("Bot is running...")
-        self.app.run_polling(allowed_updates=Update.ALL_TYPES)
+        port = int(os.getenv("PORT", 8080))
+        self.flask_app.run(host="0.0.0.0", port=port)

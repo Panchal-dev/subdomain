@@ -2,6 +2,7 @@
 import sys
 import asyncio
 import requests
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Add project root to sys.path
@@ -18,49 +19,41 @@ class SubFinder:
         self.bot = TelegramBot(bot_token, chat_id, self)
         self.output_file = output_file
         self.completed = 0
-        self.batch_size = 100  # Process 100 domains at a time
+        self.batch_size = 100
 
     def _fetch_from_source(self, source, domain, retries=3):
         for attempt in range(retries):
             try:
                 found = source.fetch(domain)
+                self.console.print(f"Fetched {len(found)} subdomains from {source.name} for {domain}")
                 return DomainValidator.filter_valid_subdomains(found, domain)
             except Exception as e:
                 if attempt == retries - 1:
                     self.console.print_error(f"Error in {source.name} for {domain}: {str(e)}")
                     return set()
                 self.console.print(f"Retrying {source.name} for {domain} ({attempt + 1}/{retries})")
-                time.sleep(1)  # Use time.sleep for sync function
+                time.sleep(2)  # Increased delay for rate limits
 
-    async def save_subdomains(self, subdomains, output_file):
+    def save_subdomains(self, subdomains, output_file):  # Made synchronous
         if subdomains:
             os.makedirs(os.path.dirname(output_file) or '.', exist_ok=True)
             with open(output_file, "a", encoding="utf-8") as f:
                 f.write("\n".join(sorted(subdomains)) + "\n")
             self.console.print(f"Results saved to {output_file}")
-            await self.bot.send_message(f"Subdomain enumeration complete. Results saved to {output_file}\nFound {len(subdomains)} subdomains.")
-            await self.bot.send_file(output_file)
-            try:
-                os.remove(output_file)
-                self.console.print(f"Deleted local file: {output_file}")
-            except Exception as e:
-                self.console.print_error(f"Error deleting file {output_file}: {str(e)}")
-                await self.bot.send_message(f"Error deleting file {output_file}: {str(e)}")
+            return True
         else:
             self.console.print_error("No subdomains found, no file saved.")
-            await self.bot.send_message("No subdomains found, no file saved.")
+            return False
 
-    def process_domain(self, domain, sources, total, cancel_event):  # Made synchronous
+    def process_domain(self, domain, sources, total, cancel_event):
         if cancel_event.is_set():
             self.console.print(f"Scan cancelled for domain: {domain}")
-            asyncio.run(self.bot.send_message(f"Scan cancelled for domain: {domain}"))
-            return set()
+            return set(), False
 
         if not DomainValidator.is_valid_domain(domain):
             self.console.print_error(f"Invalid domain: {domain}")
-            asyncio.run(self.bot.send_message(f"Invalid domain: {domain}"))
             self.completed += 1
-            return set()
+            return set(), False
 
         self.console.print_domain_start(domain)
         self.console.print_progress(self.completed, total)
@@ -72,11 +65,11 @@ class SubFinder:
         subdomains = set().union(*results) if results else set()
         self.console.update_domain_stats(domain, len(subdomains))
         self.console.print_domain_complete(domain, len(subdomains))
-        asyncio.run(self.save_subdomains(subdomains, self.output_file))
+        saved = self.save_subdomains(subdomains, self.output_file)
 
         self.completed += 1
         self.console.print_progress(self.completed, total)
-        return subdomains
+        return subdomains, saved
 
     async def run_async(self, input_data, is_file=False, cancel_event=None):
         sources = get_sources()
@@ -133,8 +126,17 @@ class SubFinder:
                 futures = [executor.submit(self.process_domain, domain, sources, total, cancel_event) for domain in batch]
                 for future in as_completed(futures):
                     try:
-                        result = future.result()
-                        all_subdomains.update(result)
+                        subdomains, saved = future.result()
+                        all_subdomains.update(subdomains)
+                        if saved:
+                            await self.bot.send_message(f"Subdomain enumeration complete. Results saved to {self.output_file}\nFound {len(subdomains)} subdomains.")
+                            await self.bot.send_file(self.output_file)
+                            try:
+                                os.remove(self.output_file)
+                                self.console.print(f"Deleted local file: {self.output_file}")
+                            except Exception as e:
+                                self.console.print_error(f"Error deleting file {self.output_file}: {str(e)}")
+                                await self.bot.send_message(f"Error deleting file {self.output_file}: {str(e)}")
                     except Exception as e:
                         self.console.print_error(f"Error processing domain: {str(e)}")
                         await self.bot.send_message(f"Error processing domain: {str(e)}")
