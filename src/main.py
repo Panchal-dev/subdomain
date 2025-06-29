@@ -1,7 +1,12 @@
 ﻿import os
+import sys
 import asyncio
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Add project root to sys.path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from src.utils.validator import DomainValidator, IPValidator
 from src.utils.console import SubFinderConsole
 from src.utils.telegram import TelegramBot
@@ -25,7 +30,7 @@ class SubFinder:
                     self.console.print_error(f"Error in {source.name} for {domain}: {str(e)}")
                     return set()
                 self.console.print(f"Retrying {source.name} for {domain} ({attempt + 1}/{retries})")
-                asyncio.sleep(1)  # Brief delay before retry
+                asyncio.sleep(1)
 
     async def save_subdomains(self, subdomains, output_file):
         if subdomains:
@@ -60,7 +65,7 @@ class SubFinder:
         self.console.print_domain_start(domain)
         self.console.print_progress(self.completed, total)
         
-        with ThreadPoolExecutor(max_workers=3) as executor:  # Reduced workers
+        with ThreadPoolExecutor(max_workers=3) as executor:
             futures = [executor.submit(self._fetch_from_source, source, domain) for source in sources]
             results = [f.result() for f in as_completed(futures)]
 
@@ -115,7 +120,6 @@ class SubFinder:
                 self.console.print_error(f"Error clearing output file {self.output_file}: {str(e)}")
                 await self.bot.send_message(f"Error clearing output file {self.output_file}: {str(e)}")
 
-        # Process domains in batches
         for i in range(0, len(domains), self.batch_size):
             if cancel_event and cancel_event.is_set():
                 self.console.print("Scan cancelled")
@@ -129,7 +133,7 @@ class SubFinder:
                 futures = [executor.submit(self.process_domain, domain, sources, total, cancel_event) for domain in batch]
                 for future in as_completed(futures):
                     try:
-                        result = await future.result()
+                        result = future.result()
                         all_subdomains.update(result)
                     except Exception as e:
                         self.console.print_error(f"Error processing domain: {str(e)}")
