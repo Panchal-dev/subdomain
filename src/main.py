@@ -30,7 +30,7 @@ class SubFinder:
                     self.console.print_error(f"Error in {source.name} for {domain}: {str(e)}")
                     return set()
                 self.console.print(f"Retrying {source.name} for {domain} ({attempt + 1}/{retries})")
-                asyncio.sleep(1)
+                time.sleep(1)  # Use time.sleep for sync function
 
     async def save_subdomains(self, subdomains, output_file):
         if subdomains:
@@ -50,15 +50,15 @@ class SubFinder:
             self.console.print_error("No subdomains found, no file saved.")
             await self.bot.send_message("No subdomains found, no file saved.")
 
-    async def process_domain(self, domain, sources, total, cancel_event):
+    def process_domain(self, domain, sources, total, cancel_event):  # Made synchronous
         if cancel_event.is_set():
             self.console.print(f"Scan cancelled for domain: {domain}")
-            await self.bot.send_message(f"Scan cancelled for domain: {domain}")
+            asyncio.run(self.bot.send_message(f"Scan cancelled for domain: {domain}"))
             return set()
 
         if not DomainValidator.is_valid_domain(domain):
             self.console.print_error(f"Invalid domain: {domain}")
-            await self.bot.send_message(f"Invalid domain: {domain}")
+            asyncio.run(self.bot.send_message(f"Invalid domain: {domain}"))
             self.completed += 1
             return set()
 
@@ -72,7 +72,7 @@ class SubFinder:
         subdomains = set().union(*results) if results else set()
         self.console.update_domain_stats(domain, len(subdomains))
         self.console.print_domain_complete(domain, len(subdomains))
-        await self.save_subdomains(subdomains, self.output_file)
+        asyncio.run(self.save_subdomains(subdomains, self.output_file))
 
         self.completed += 1
         self.console.print_progress(self.completed, total)

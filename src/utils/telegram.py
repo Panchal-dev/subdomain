@@ -79,7 +79,7 @@ class TelegramBot:
                 if not domains:
                     await update.message.reply_text("No valid input provided.")
                     return
-                await update.message.reply_text(f"Starting subdomain enumeration for {', '.join(domains)}")
+                # Removed redundant message to avoid duplicates
                 await self.subfinder.run_async(domains, is_file=False, cancel_event=self.cancel_event)
         finally:
             self.is_running = False
