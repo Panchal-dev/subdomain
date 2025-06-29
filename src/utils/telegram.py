@@ -28,11 +28,11 @@ class TelegramBot:
 
     def setup_webhook(self):
         @flask_app.route(f"/{self.bot_token}", methods=["POST"])
-        def webhook():
+        async def webhook():
             try:
                 update = Update.de_json(request.get_json(), self.app.bot)
                 if update:
-                    asyncio.run_coroutine_threadsafe(self.app.process_update(update), self.app.loop)
+                    await self.app.process_update(update)  # Directly await the coroutine
                 return "OK", 200
             except Exception as e:
                 print(f"Webhook error: {str(e)}")
@@ -124,5 +124,6 @@ class TelegramBot:
             print(f"Error sending Telegram file: {str(e)}")
 
     def run(self):
+        # Initialize Flask app with async support
         port = int(os.getenv("PORT", 8080))
         flask_app.run(host="0.0.0.0", port=port)
