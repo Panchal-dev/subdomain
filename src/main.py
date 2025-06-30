@@ -1,10 +1,10 @@
 ﻿import os
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from src.utils.validator import DomainValidator, IPValidator
-from src.utils.console import SubFinderConsole
-from src.utils.telegram import TelegramBot
-from src.sources.sources import get_sources
+from .utils.validator import DomainValidator, IPValidator
+from .utils.console import SubFinderConsole
+from .utils.telegram import TelegramBot
+from .sources.sources import get_sources
 
 class SubFinder:
     def __init__(self, bot_token, chat_id, output_file="subdomains.txt"):
