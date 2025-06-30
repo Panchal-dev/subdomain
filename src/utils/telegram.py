@@ -1,11 +1,8 @@
 ﻿from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from flask import Flask, request
 import os
 import asyncio
-import json
-
-flask_app = Flask(__name__)
+import tempfile
 
 class TelegramBot:
     def __init__(self, bot_token, chat_id, subfinder):
@@ -16,37 +13,17 @@ class TelegramBot:
         self.is_running = False
         self.cancel_event = asyncio.Event()
         self.last_message_id = None
-        self.setup_handlers()
-        self.setup_webhook()
-
-    def setup_handlers(self):
-        self.app.add_handler(CommandHandler("start", self.start))
-        self.app.add_handler(CommandHandler("cmd", self.cmd))
-        self.app.add_handler(CommandHandler("status", self.status))
-        self.app.add_handler(CommandHandler("cancel", self.cancel))
-        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
-
-    def setup_webhook(self):
-        @flask_app.route(f"/{self.bot_token}", methods=["POST"])
-        async def webhook():
-            try:
-                update = Update.de_json(request.get_json(), self.app.bot)
-                if update:
-                    await self.app.process_update(update)
-                return "OK", 200
-            except Exception as e:
-                print(f"Webhook error: {str(e)}")
-                return "Error", 500
+        self.progress_message_id = None
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
-            "Welcome to the Subdomain Enumerator Bot!\n"
-            "Send a domain, multiple domains (one per line), or a .txt file path.\n"
+            "Welcome to the Subdomain Enumerator Bot! 🌐\n"
+            "Send a domain, multiple domains (one per line), or upload a .txt file with domains (one per line).\n"
             "Commands:\n"
             "/cmd - List all commands\n"
             "/status - Check scan status\n"
             "/cancel - Cancel current scan\n"
-            "Example: wibmo.com\nor\nwibmo.com\npayu.in"
+            "Example: wibmo.com\nor\nwibmo.com\npayu.in\nor upload domains.txt"
         )
 
     async def cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -56,11 +33,11 @@ class TelegramBot:
             "/cmd - List all commands\n"
             "/status - Check scan status\n"
             "/cancel - Cancel current scan\n"
-            "Or send a domain, multiple domains (one per line), or a .txt file path."
+            "Or send a domain, multiple domains (one per line), or upload a .txt file with domains."
         )
 
     async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        status = "Scanning in progress..." if self.is_running else "No scan is currently running."
+        status = "Scanning in progress... Check the progress bar." if self.is_running else "No scan is currently running."
         await update.message.reply_text(status)
 
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -73,7 +50,42 @@ class TelegramBot:
         else:
             await update.message.reply_text("No scan is currently running.")
 
-    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def update_progress(self, progress):
+        bar_length = 10
+        filled = int(progress * bar_length)
+        bar = '█' * filled + '□' * (bar_length - filled)
+        percentage = int(progress * 100)
+        message = f"Progress: [{bar}] {percentage}%"
+    
+        try:
+            if self.progress_message_id:
+                await self.app.bot.edit_message_text(
+                    chat_id=self.chat_id,
+                    message_id=self.progress_message_id,
+                    text=message
+                )
+            else:
+                sent_message = await self.app.bot.send_message(
+                    chat_id=self.chat_id,
+                    text=message
+                )
+                self.progress_message_id = sent_message.message_id
+    
+            print(f"Progress updated: {percentage}%")
+    
+            if percentage >= 100:
+                await asyncio.sleep(1)
+                await self.app.bot.delete_message(
+                    chat_id=self.chat_id,
+                    message_id=self.progress_message_id
+                )
+                self.progress_message_id = None
+                print("Progress bar removed after completion.")
+    
+        except Exception as e:
+            print(f"Error updating progress: {str(e)}")
+
+    async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if str(update.effective_chat.id) != self.chat_id:
             await update.message.reply_text("Unauthorized chat ID.")
             return
@@ -84,7 +96,7 @@ class TelegramBot:
         self.last_message_id = message_id
 
         if self.is_running:
-            await update.message.reply_text("A scan is already in progress. Use /cancel to stop it.")
+            await update.message.reply_text("A scan is already in progress. Use /cancel to stop it or wait for it to complete.")
             return
 
         text = update.message.text.strip()
@@ -94,19 +106,72 @@ class TelegramBot:
 
         self.cancel_event.clear()
         self.is_running = True
+        self.progress_message_id = None
 
         try:
             if text.endswith('.txt') and os.path.isfile(text):
-                await update.message.reply_text(f"Detected file input: {text}")
-                await self.subfinder.run_async(text, is_file=True, cancel_event=self.cancel_event)
+                with open(text, 'r', encoding='utf-8') as f:
+                    domains = [d.strip() for d in f if d.strip()]
+                if not domains:
+                    await update.message.reply_text("No valid domains found in the file.")
+                    return
+                await self.subfinder.run_async(domains, is_file=False, cancel_event=self.cancel_event, bot=self)
             else:
                 domains = [d.strip() for d in text.split('\n') if d.strip()]
                 if not domains:
                     await update.message.reply_text("No valid input provided.")
                     return
-                await self.subfinder.run_async(domains, is_file=False, cancel_event=self.cancel_event)
+                await self.subfinder.run_async(domains, is_file=False, cancel_event=self.cancel_event, bot=self)
         finally:
             self.is_running = False
+            self.progress_message_id = None
+
+    async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if str(update.effective_chat.id) != self.chat_id:
+            await update.message.reply_text("Unauthorized chat ID.")
+            return
+
+        message_id = update.message.message_id
+        if message_id == self.last_message_id:
+            return
+        self.last_message_id = message_id
+
+        if self.is_running:
+            await update.message.reply_text("A scan is already in progress. Use /cancel to stop it or wait for it to complete.")
+            return
+
+        document = update.message.document
+        if not document or not document.file_name.endswith('.txt'):
+            await update.message.reply_text("Please upload a .txt file with domains (one per line).")
+            return
+
+        self.cancel_event.clear()
+        self.is_running = True
+        self.progress_message_id = None
+
+        try:
+            file = await context.bot.get_file(document.file_id)
+            file_path = os.path.join(tempfile.gettempdir(), document.file_name)
+            await file.download_to_drive(file_path)
+
+            with open(file_path, 'r', encoding='utf-8') as f:
+                domains = [d.strip() for d in f if d.strip()]
+            
+            if not domains:
+                await update.message.reply_text("No valid domains found in the uploaded file.")
+                return
+
+            await self.subfinder.run_async(domains, is_file=False, cancel_event=self.cancel_event, bot=self)
+            
+            try:
+                os.remove(file_path)
+            except Exception as e:
+                print(f"Error deleting temporary file {file_path}: {str(e)}")
+        except Exception as e:
+            await update.message.reply_text(f"Error processing uploaded file: {str(e)}")
+        finally:
+            self.is_running = False
+            self.progress_message_id = None
 
     async def send_message(self, message):
         try:
@@ -115,14 +180,26 @@ class TelegramBot:
         except Exception as e:
             print(f"Error sending Telegram notification: {str(e)}")
 
-    async def send_file(self, file_path):
+    async def send_file(self, file_path, subdomain_count=0):
         try:
             with open(file_path, 'rb') as file:
-                await self.app.bot.send_document(chat_id=self.chat_id, document=file, filename=os.path.basename(file_path))
+                caption = f"Found {subdomain_count} subdomains"
+                await self.app.bot.send_document(
+                    chat_id=self.chat_id,
+                    document=file,
+                    filename=os.path.basename(file_path),
+                    caption=caption
+                )
             print(f"Telegram file sent successfully: {file_path}")
         except Exception as e:
             print(f"Error sending Telegram file: {str(e)}")
 
     def run(self):
-        port = int(os.getenv("PORT", 8080))
-        flask_app.run(host="0.0.0.0", port=port)
+        self.app.add_handler(CommandHandler("start", self.start))
+        self.app.add_handler(CommandHandler("cmd", self.cmd))
+        self.app.add_handler(CommandHandler("status", self.status))
+        self.app.add_handler(CommandHandler("cancel", self.cancel))
+        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text))
+        self.app.add_handler(MessageHandler(filters.Document.TXT, self.handle_document))
+        print("Bot is running...")
+        self.app.run_polling(allowed_updates=Update.ALL_TYPES)
