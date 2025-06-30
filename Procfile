@@ -1,1 +1,1 @@
-﻿worker: cd /app && python -m src.main
+﻿worker: python -m src.main
