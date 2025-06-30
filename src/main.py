@@ -1,6 +1,11 @@
 ﻿import os
+import sys
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Add project root to sys.path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from src.utils.validator import DomainValidator, IPValidator
 from src.utils.console import SubFinderConsole
 from src.utils.telegram import TelegramBot
@@ -112,7 +117,7 @@ class SubFinder:
             batch = self.domains[i:i + max_concurrent]
             tasks = [self.process_domain(domain, sources, total, cancel_event) for domain in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            self.completed += len(batch)
+            self.completed += len([r for r in results if isinstance(r, set)])
             await bot.update_progress(self.completed / total)
             for result in results:
                 if isinstance(result, set):
