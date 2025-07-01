@@ -1,5 +1,6 @@
 ﻿from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.error import Conflict
 import os
 import asyncio
 import tempfile
@@ -15,7 +16,7 @@ class TelegramBot:
         self.cancel_event = asyncio.Event()
         self.last_message_id = None
         self.progress_message_id = None
-        self.last_percentage = -1  # Track last sent percentage
+        self.last_percentage = -1
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await self._send_message(update.message, 
@@ -58,17 +59,19 @@ class TelegramBot:
                 await message.reply_text(text)
                 print("Telegram notification sent successfully.")
                 return
+            except Conflict as e:
+                print(f"Conflict error sending message (attempt {attempt + 1}/{max_retries}): {str(e)}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
             except Exception as e:
                 print(f"Error sending Telegram notification (attempt {attempt + 1}/{max_retries}): {str(e)}")
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
-                else:
-                    print(f"Failed to send Telegram notification after {max_retries} attempts.")
+                    await asyncio.sleep(2 ** attempt)
 
     async def update_progress(self, progress):
         bar_length = 10
         percentage = int(progress * 100)
-        if percentage == self.last_percentage:  # Skip if percentage hasn't changed
+        if percentage == self.last_percentage:
             return
         self.last_percentage = percentage
         filled = int(progress * bar_length)
@@ -92,9 +95,13 @@ class TelegramBot:
     
                 print(f"Progress updated: {percentage}%")
                 break
+            except Conflict as e:
+                print(f"Conflict error updating progress (attempt {attempt + 1}/3): {str(e)}")
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt)
             except Exception as e:
                 if "Message is not modified" in str(e):
-                    return  # Silently skip if message is unchanged
+                    return
                 print(f"Error updating progress (attempt {attempt + 1}/3): {str(e)}")
                 if attempt < 2:
                     await asyncio.sleep(2 ** attempt)
@@ -109,6 +116,8 @@ class TelegramBot:
                 self.progress_message_id = None
                 self.last_percentage = -1
                 print("Progress bar removed after completion.")
+            except Conflict as e:
+                print(f"Conflict error deleting progress bar: {str(e)}")
             except Exception as e:
                 print(f"Error deleting progress bar: {str(e)}")
 
@@ -220,6 +229,10 @@ class TelegramBot:
                     )
                 print(f"Telegram file sent successfully: {file_path}")
                 break
+            except Conflict as e:
+                print(f"Conflict error sending file (attempt {attempt + 1}/3): {str(e)}")
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt)
             except Exception as e:
                 print(f"Error sending Telegram file (attempt {attempt + 1}/3): {str(e)}")
                 if attempt < 2:
@@ -233,4 +246,9 @@ class TelegramBot:
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text))
         self.app.add_handler(MessageHandler(filters.Document.TXT, self.handle_document))
         print("Bot is running...")
-        self.app.run_polling(allowed_updates=Update.ALL_TYPES)
+        try:
+            self.app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+        except Conflict as e:
+            print(f"Conflict error in polling: {str(e)}. Retrying in 5 seconds...")
+            time.sleep(5)
+            self.app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)

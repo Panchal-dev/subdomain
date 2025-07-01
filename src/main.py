@@ -48,7 +48,7 @@ class SubFinder:
             self.console.print_error(f"Error saving subdomains: {str(e)}")
             await self.bot.send_message(f"Error saving subdomains: {str(e)}")
 
-    async def process_domain(self, domain, sources, total, cancel_event):
+    async def process_domain(self, domain, sources, cancel_event):
         if cancel_event.is_set():
             self.console.print(f"Scan cancelled for domain: {domain}")
             return set()
@@ -124,7 +124,7 @@ class SubFinder:
                     await bot.send_message("Scan cancelled")
                     break
                 batch = self.domains[i:i + max_concurrent]
-                tasks = [self.process_domain(domain, sources, total, cancel_event) for domain in batch]
+                tasks = [self.process_domain(domain, sources, cancel_event) for domain in batch]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 self.completed += len([r for r in results if isinstance(r, set)])
                 await bot.update_progress(self.completed / total)
