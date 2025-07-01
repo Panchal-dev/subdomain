@@ -1,4 +1,5 @@
-﻿import os
+﻿# subfinder.py
+import os
 import sys
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -34,28 +35,27 @@ class SubFinder:
                 with open(output_file, "w", encoding="utf-8") as f:
                     f.write("\n".join(sorted(subdomains)) + "\n")
                 self.console.print(f"Results saved to {output_file}")
-                await self.bot.send_file(chat_id, output_file, subdomain_count=len(subdomains))
+                await self.bot.send_file(output_file, len(subdomains), chat_id)
                 try:
                     os.remove(output_file)
                     self.console.print(f"Deleted local file: {output_file}")
                 except Exception as e:
                     self.console.print_error(f"Error deleting file {output_file}: {str(e)}")
-                    await self.bot.send_message(chat_id, f"Error deleting file {output_file}: {str(e)}")
+                    await self.bot.send_message(f"Error deleting file {output_file}: {str(e)}", chat_id)
             else:
                 self.console.print_error("No subdomains found, no file saved.")
-                await self.bot.send_message(chat_id, "No subdomains found, no file saved.")
+                await self.bot.send_message("No subdomains found, no file saved.", chat_id)
         except Exception as e:
             self.console.print_error(f"Error saving subdomains: {str(e)}")
-            await self.bot.send_message(chat_id, f"Error saving subdomains: {str(e)}")
+            await self.bot.send_message(f"Error saving subdomains: {str(e)}", chat_id)
 
-    async def process_domain(self, domain, sources, cancel_event, chat_id):
+    async def process_domain(self, domain, sources, cancel_event):
         if cancel_event.is_set():
             self.console.print(f"Scan cancelled for domain: {domain}")
             return set()
 
         if not DomainValidator.is_valid_domain(domain):
             self.console.print_error(f"Invalid domain: {domain}")
-            await self.bot.send_message(chat_id, f"Invalid domain: {domain}")
             return set()
 
         self.console.print_domain_start(domain)
@@ -74,7 +74,7 @@ class SubFinder:
 
         return subdomains
 
-    async def run_async(self, input_data, chat_id, is_file=False, cancel_event=None):
+    async def run_async(self, input_data, is_file=False, cancel_event=None, bot=None, chat_id=None):
         try:
             sources = get_sources()
             self.domains = []  # Reset domains
@@ -87,7 +87,7 @@ class SubFinder:
                     self.output_file = "subdomains.txt"
                 except Exception as e:
                     self.console.print_error(f"Error reading file {input_data}: {str(e)}")
-                    await self.bot.send_message(chat_id, f"Error reading input file: {str(e)}")
+                    await bot.send_message(f"Error reading input file: {str(e)}", chat_id)
                     return
             else:
                 if isinstance(input_data, list):
@@ -99,12 +99,12 @@ class SubFinder:
                         self.output_file = "subdomains.txt"
                     else:
                         self.console.print_error(f"Invalid input: {input_data}")
-                        await self.bot.send_message(chat_id, f"Invalid input: {input_data}")
+                        await bot.send_message(f"Invalid input: {input_data}", chat_id)
                         return
 
             if not self.domains:
                 self.console.print_error("No valid domains provided")
-                await self.bot.send_message(chat_id, "No valid domains provided")
+                await bot.send_message("No valid domains provided", chat_id)
                 return
 
             total = len(self.domains)
@@ -115,19 +115,19 @@ class SubFinder:
                     os.remove(self.output_file)
                 except Exception as e:
                     self.console.print_error(f"Error clearing output file {self.output_file}: {str(e)}")
-                    await self.bot.send_message(chat_id, f"Error clearing output file {self.output_file}: {str(e)}")
+                    await bot.send_message(f"Error clearing output file {self.output_file}: {str(e)}", chat_id)
 
             max_concurrent = 3
             for i in range(0, len(self.domains), max_concurrent):
                 if cancel_event and cancel_event.is_set():
                     self.console.print("Scan cancelled")
-                    await self.bot.send_message(chat_id, "Scan cancelled")
+                    await bot.send_message("Scan cancelled", chat_id)
                     break
                 batch = self.domains[i:i + max_concurrent]
-                tasks = [self.process_domain(domain, sources, cancel_event, chat_id) for domain in batch]
+                tasks = [self.process_domain(domain, sources, cancel_event) for domain in batch]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 self.completed += len([r for r in results if isinstance(r, set)])
-                await self.bot.update_progress(chat_id, self.completed / total)
+                await bot.update_progress(self.completed / total, chat_id)
                 for result in results:
                     if isinstance(result, set):
                         all_subdomains.update(result)
@@ -142,7 +142,7 @@ class SubFinder:
             self.console.print_final_summary(self.output_file)
         except Exception as e:
             self.console.print_error(f"Error in run_async: {str(e)}")
-            await self.bot.send_message(chat_id, f"Error during scan: {str(e)}")
+            await bot.send_message(f"Error during scan: {str(e)}", chat_id)
         finally:
             self.domains = []
             self.completed = 0

@@ -1,4 +1,5 @@
-﻿from telegram import Update
+﻿# telegram.py
+from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.error import Conflict
 import os
@@ -7,16 +8,15 @@ import tempfile
 import time
 
 class TelegramBot:
-    def __init__(self, bot_token, chat_id, subfinder):
+    def __init__(self, bot_token, subfinder):
         self.bot_token = bot_token
-        self.chat_id = chat_id
         self.subfinder = subfinder
         self.app = Application.builder().token(bot_token).build()
-        self.is_running = False
-        self.cancel_event = asyncio.Event()
-        self.last_message_id = None
-        self.progress_message_id = None
-        self.last_percentage = -1
+        self.is_running = {}  # Track running status per chat_id
+        self.cancel_events = {}  # Track cancel events per chat_id
+        self.last_message_ids = {}  # Track last message ID per chat_id
+        self.progress_message_ids = {}  # Track progress message ID per chat_id
+        self.last_percentages = {}  # Track last percentage per chat_id
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await self._send_message(update.message, 
@@ -40,15 +40,14 @@ class TelegramBot:
         )
 
     async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        status = "Scanning in progress... Check the progress bar." if self.is_running else "No scan is currently running."
+        chat_id = str(update.effective_chat.id)
+        status = "Scanning in progress... Check the progress bar." if self.is_running.get(chat_id, False) else "No scan is currently running."
         await self._send_message(update.message, status)
 
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if str(update.effective_chat.id) != self.chat_id:
-            await self._send_message(update.message, "Unauthorized chat ID.")
-            return
-        if self.is_running:
-            self.cancel_event.set()
+        chat_id = str(update.effective_chat.id)
+        if self.is_running.get(chat_id, False):
+            self.cancel_events[chat_id].set()
             await self._send_message(update.message, "Scan cancellation requested. Please wait...")
         else:
             await self._send_message(update.message, "No scan is currently running.")
@@ -68,41 +67,41 @@ class TelegramBot:
                 if attempt < max_retries - 1:
                     await asyncio.sleep(2 ** attempt)
 
-    async def update_progress(self, progress):
+    async def update_progress(self, progress, chat_id):
         bar_length = 10
         percentage = int(progress * 100)
-        if percentage == self.last_percentage:
+        if percentage == self.last_percentages.get(chat_id, -1):
             return
-        self.last_percentage = percentage
+        self.last_percentages[chat_id] = percentage
         filled = int(progress * bar_length)
         bar = '█' * filled + '□' * (bar_length - filled)
         message = f"Progress: [{bar}] {percentage}%"
     
         for attempt in range(3):
             try:
-                if self.progress_message_id:
+                if self.progress_message_ids.get(chat_id):
                     await self.app.bot.edit_message_text(
-                        chat_id=self.chat_id,
-                        message_id=self.progress_message_id,
+                        chat_id=chat_id,
+                        message_id=self.progress_message_ids[chat_id],
                         text=message
                     )
                 else:
                     sent_message = await self.app.bot.send_message(
-                        chat_id=self.chat_id,
+                        chat_id=chat_id,
                         text=message
                     )
-                    self.progress_message_id = sent_message.message_id
+                    self.progress_message_ids[chat_id] = sent_message.message_id
     
-                print(f"Progress updated: {percentage}%")
+                print(f"Progress updated for chat {chat_id}: {percentage}%")
                 break
             except Conflict as e:
-                print(f"Conflict error updating progress (attempt {attempt + 1}/3): {str(e)}")
+                print(f"Conflict error updating progress for chat {chat_id} (attempt {attempt + 1}/3): {str(e)}")
                 if attempt < 2:
                     await asyncio.sleep(2 ** attempt)
             except Exception as e:
                 if "Message is not modified" in str(e):
                     return
-                print(f"Error updating progress (attempt {attempt + 1}/3): {str(e)}")
+                print(f"Error updating progress for chat {chat_id} (attempt {attempt + 1}/3): {str(e)}")
                 if attempt < 2:
                     await asyncio.sleep(2 ** attempt)
     
@@ -110,28 +109,25 @@ class TelegramBot:
             try:
                 await asyncio.sleep(1)
                 await self.app.bot.delete_message(
-                    chat_id=self.chat_id,
-                    message_id=self.progress_message_id
+                    chat_id=chat_id,
+                    message_id=self.progress_message_ids[chat_id]
                 )
-                self.progress_message_id = None
-                self.last_percentage = -1
-                print("Progress bar removed after completion.")
+                self.progress_message_ids.pop(chat_id, None)
+                self.last_percentages.pop(chat_id, None)
+                print(f"Progress bar removed for chat {chat_id} after completion.")
             except Conflict as e:
-                print(f"Conflict error deleting progress bar: {str(e)}")
+                print(f"Conflict error deleting progress bar for chat {chat_id}: {str(e)}")
             except Exception as e:
-                print(f"Error deleting progress bar: {str(e)}")
+                print(f"Error deleting progress bar for chat {chat_id}: {str(e)}")
 
     async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if str(update.effective_chat.id) != self.chat_id:
-            await self._send_message(update.message, "Unauthorized chat ID.")
-            return
-
+        chat_id = str(update.effective_chat.id)
         message_id = update.message.message_id
-        if message_id == self.last_message_id:
+        if message_id == self.last_message_ids.get(chat_id):
             return
-        self.last_message_id = message_id
+        self.last_message_ids[chat_id] = message_id
 
-        if self.is_running:
+        if self.is_running.get(chat_id, False):
             await self._send_message(update.message, "A scan is already in progress. Use /cancel to stop it or wait for it to complete.")
             return
 
@@ -140,10 +136,10 @@ class TelegramBot:
             await self._send_message(update.message, "Please provide a domain, multiple domains (one per line), or a .txt file path.")
             return
 
-        self.cancel_event.clear()
-        self.is_running = True
-        self.progress_message_id = None
-        self.last_percentage = -1
+        self.cancel_events[chat_id] = asyncio.Event()
+        self.is_running[chat_id] = True
+        self.progress_message_ids[chat_id] = None
+        self.last_percentages[chat_id] = -1
 
         try:
             if text.endswith('.txt') and os.path.isfile(text):
@@ -152,29 +148,27 @@ class TelegramBot:
                 if not domains:
                     await self._send_message(update.message, "No valid domains found in the file.")
                     return
-                await self.subfinder.run_async(domains, is_file=False, cancel_event=self.cancel_event, bot=self)
+                await self.subfinder.run_async(domains, is_file=False, cancel_event=self.cancel_events[chat_id], bot=self, chat_id=chat_id)
             else:
                 domains = [d.strip() for d in text.split('\n') if d.strip()]
                 if not domains:
                     await self._send_message(update.message, "No valid input provided.")
                     return
-                await self.subfinder.run_async(domains, is_file=False, cancel_event=self.cancel_event, bot=self)
+                await self.subfinder.run_async(domains, is_file=False, cancel_event=self.cancel_events[chat_id], bot=self, chat_id=chat_id)
         finally:
-            self.is_running = False
-            self.progress_message_id = None
-            self.last_percentage = -1
+            self.is_running[chat_id] = False
+            self.progress_message_ids.pop(chat_id, None)
+            self.last_percentages.pop(chat_id, None)
+            self.cancel_events.pop(chat_id, None)
 
     async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if str(update.effective_chat.id) != self.chat_id:
-            await self._send_message(update.message, "Unauthorized chat ID.")
-            return
-
+        chat_id = str(update.effective_chat.id)
         message_id = update.message.message_id
-        if message_id == self.last_message_id:
+        if message_id == self.last_message_ids.get(chat_id):
             return
-        self.last_message_id = message_id
+        self.last_message_ids[chat_id] = message_id
 
-        if self.is_running:
+        if self.is_running.get(chat_id, False):
             await self._send_message(update.message, "A scan is already in progress. Use /cancel to stop it or wait for it to complete.")
             return
 
@@ -183,10 +177,10 @@ class TelegramBot:
             await self._send_message(update.message, "Please upload a .txt file with domains (one per line).")
             return
 
-        self.cancel_event.clear()
-        self.is_running = True
-        self.progress_message_id = None
-        self.last_percentage = -1
+        self.cancel_events[chat_id] = asyncio.Event()
+        self.is_running[chat_id] = True
+        self.progress_message_ids[chat_id] = None
+        self.last_percentages[chat_id] = -1
 
         try:
             file = await context.bot.get_file(document.file_id)
@@ -200,7 +194,7 @@ class TelegramBot:
                 await self._send_message(update.message, "No valid domains found in the uploaded file.")
                 return
 
-            await self.subfinder.run_async(domains, is_file=False, cancel_event=self.cancel_event, bot=self)
+            await self.subfinder.run_async(domains, is_file=False, cancel_event=self.cancel_events[chat_id], bot=self, chat_id=chat_id)
             
             try:
                 os.remove(file_path)
@@ -209,32 +203,48 @@ class TelegramBot:
         except Exception as e:
             await self._send_message(update.message, f"Error processing uploaded file: {str(e)}")
         finally:
-            self.is_running = False
-            self.progress_message_id = None
-            self.last_percentage = -1
+            self.is_running[chat_id] = False
+            self.progress_message_ids.pop(chat_id, None)
+            self.last_percentages.pop(chat_id, None)
+            self.cancel_events.pop(chat_id, None)
 
-    async def send_message(self, message):
-        await self._send_message(None, message)
+    async def send_message(self, message, chat_id):
+        for attempt in range(3):
+            try:
+                await self.app.bot.send_message(
+                    chat_id=chat_id,
+                    text=message
+                )
+                print(f"Telegram message sent successfully to chat {chat_id}.")
+                break
+            except Conflict as e:
+                print(f"Conflict error sending message to chat {chat_id} (attempt {attempt + 1}/3): {str(e)}")
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt)
+            except Exception as e:
+                print(f"Error sending Telegram message to chat {chat_id} (attempt {attempt + 1}/3): {str(e)}")
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt)
 
-    async def send_file(self, file_path, subdomain_count=0):
+    async def send_file(self, file_path, subdomain_count, chat_id):
         for attempt in range(3):
             try:
                 with open(file_path, 'rb') as file:
                     caption = f"Found {subdomain_count} subdomains"
                     await self.app.bot.send_document(
-                        chat_id=self.chat_id,
+                        chat_id=chat_id,
                         document=file,
                         filename=os.path.basename(file_path),
                         caption=caption
                     )
-                print(f"Telegram file sent successfully: {file_path}")
+                print(f"Telegram file sent successfully to chat {chat_id}: {file_path}")
                 break
             except Conflict as e:
-                print(f"Conflict error sending file (attempt {attempt + 1}/3): {str(e)}")
+                print(f"Conflict error sending file to chat {chat_id} (attempt {attempt + 1}/3): {str(e)}")
                 if attempt < 2:
                     await asyncio.sleep(2 ** attempt)
             except Exception as e:
-                print(f"Error sending Telegram file (attempt {attempt + 1}/3): {str(e)}")
+                print(f"Error sending Telegram file to chat {chat_id} (attempt {attempt + 1}/3): {str(e)}")
                 if attempt < 2:
                     await asyncio.sleep(2 ** attempt)
 
