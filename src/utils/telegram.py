@@ -3,6 +3,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import os
 import asyncio
 import tempfile
+import time
 
 class TelegramBot:
     def __init__(self, bot_token, chat_id, subfinder):
@@ -14,9 +15,10 @@ class TelegramBot:
         self.cancel_event = asyncio.Event()
         self.last_message_id = None
         self.progress_message_id = None
+        self.last_percentage = -1  # Track last sent percentage
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text(
+        await self._send_message(update.message, 
             "Welcome to the Subdomain Enumerator Bot! 🌐\n"
             "Send a domain, multiple domains (one per line), or upload a .txt file with domains (one per line).\n"
             "Commands:\n"
@@ -27,7 +29,7 @@ class TelegramBot:
         )
 
     async def cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text(
+        await self._send_message(update.message, 
             "Available commands:\n"
             "/start - Show welcome message\n"
             "/cmd - List all commands\n"
@@ -38,56 +40,81 @@ class TelegramBot:
 
     async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         status = "Scanning in progress... Check the progress bar." if self.is_running else "No scan is currently running."
-        await update.message.reply_text(status)
+        await self._send_message(update.message, status)
 
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if str(update.effective_chat.id) != self.chat_id:
-            await update.message.reply_text("Unauthorized chat ID.")
+            await self._send_message(update.message, "Unauthorized chat ID.")
             return
         if self.is_running:
             self.cancel_event.set()
-            await update.message.reply_text("Scan cancellation requested. Please wait...")
+            await self._send_message(update.message, "Scan cancellation requested. Please wait...")
         else:
-            await update.message.reply_text("No scan is currently running.")
+            await self._send_message(update.message, "No scan is currently running.")
+
+    async def _send_message(self, message, text, max_retries=3):
+        for attempt in range(max_retries):
+            try:
+                await message.reply_text(text)
+                print("Telegram notification sent successfully.")
+                return
+            except Exception as e:
+                print(f"Error sending Telegram notification (attempt {attempt + 1}/{max_retries}): {str(e)}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                else:
+                    print(f"Failed to send Telegram notification after {max_retries} attempts.")
 
     async def update_progress(self, progress):
         bar_length = 10
+        percentage = int(progress * 100)
+        if percentage == self.last_percentage:  # Skip if percentage hasn't changed
+            return
+        self.last_percentage = percentage
         filled = int(progress * bar_length)
         bar = '█' * filled + '□' * (bar_length - filled)
-        percentage = int(progress * 100)
         message = f"Progress: [{bar}] {percentage}%"
     
-        try:
-            if self.progress_message_id:
-                await self.app.bot.edit_message_text(
-                    chat_id=self.chat_id,
-                    message_id=self.progress_message_id,
-                    text=message
-                )
-            else:
-                sent_message = await self.app.bot.send_message(
-                    chat_id=self.chat_id,
-                    text=message
-                )
-                self.progress_message_id = sent_message.message_id
+        for attempt in range(3):
+            try:
+                if self.progress_message_id:
+                    await self.app.bot.edit_message_text(
+                        chat_id=self.chat_id,
+                        message_id=self.progress_message_id,
+                        text=message
+                    )
+                else:
+                    sent_message = await self.app.bot.send_message(
+                        chat_id=self.chat_id,
+                        text=message
+                    )
+                    self.progress_message_id = sent_message.message_id
     
-            print(f"Progress updated: {percentage}%")
+                print(f"Progress updated: {percentage}%")
+                break
+            except Exception as e:
+                if "Message is not modified" in str(e):
+                    return  # Silently skip if message is unchanged
+                print(f"Error updating progress (attempt {attempt + 1}/3): {str(e)}")
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt)
     
-            if percentage >= 100:
+        if percentage >= 100:
+            try:
                 await asyncio.sleep(1)
                 await self.app.bot.delete_message(
                     chat_id=self.chat_id,
                     message_id=self.progress_message_id
                 )
                 self.progress_message_id = None
+                self.last_percentage = -1
                 print("Progress bar removed after completion.")
-    
-        except Exception as e:
-            print(f"Error updating progress: {str(e)}")
+            except Exception as e:
+                print(f"Error deleting progress bar: {str(e)}")
 
     async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if str(update.effective_chat.id) != self.chat_id:
-            await update.message.reply_text("Unauthorized chat ID.")
+            await self._send_message(update.message, "Unauthorized chat ID.")
             return
 
         message_id = update.message.message_id
@@ -96,39 +123,41 @@ class TelegramBot:
         self.last_message_id = message_id
 
         if self.is_running:
-            await update.message.reply_text("A scan is already in progress. Use /cancel to stop it or wait for it to complete.")
+            await self._send_message(update.message, "A scan is already in progress. Use /cancel to stop it or wait for it to complete.")
             return
 
         text = update.message.text.strip()
         if not text:
-            await update.message.reply_text("Please provide a domain, multiple domains (one per line), or a .txt file path.")
+            await self._send_message(update.message, "Please provide a domain, multiple domains (one per line), or a .txt file path.")
             return
 
         self.cancel_event.clear()
         self.is_running = True
         self.progress_message_id = None
+        self.last_percentage = -1
 
         try:
             if text.endswith('.txt') and os.path.isfile(text):
                 with open(text, 'r', encoding='utf-8') as f:
                     domains = [d.strip() for d in f if d.strip()]
                 if not domains:
-                    await update.message.reply_text("No valid domains found in the file.")
+                    await self._send_message(update.message, "No valid domains found in the file.")
                     return
                 await self.subfinder.run_async(domains, is_file=False, cancel_event=self.cancel_event, bot=self)
             else:
                 domains = [d.strip() for d in text.split('\n') if d.strip()]
                 if not domains:
-                    await update.message.reply_text("No valid input provided.")
+                    await self._send_message(update.message, "No valid input provided.")
                     return
                 await self.subfinder.run_async(domains, is_file=False, cancel_event=self.cancel_event, bot=self)
         finally:
             self.is_running = False
             self.progress_message_id = None
+            self.last_percentage = -1
 
     async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if str(update.effective_chat.id) != self.chat_id:
-            await update.message.reply_text("Unauthorized chat ID.")
+            await self._send_message(update.message, "Unauthorized chat ID.")
             return
 
         message_id = update.message.message_id
@@ -137,17 +166,18 @@ class TelegramBot:
         self.last_message_id = message_id
 
         if self.is_running:
-            await update.message.reply_text("A scan is already in progress. Use /cancel to stop it or wait for it to complete.")
+            await self._send_message(update.message, "A scan is already in progress. Use /cancel to stop it or wait for it to complete.")
             return
 
         document = update.message.document
         if not document or not document.file_name.endswith('.txt'):
-            await update.message.reply_text("Please upload a .txt file with domains (one per line).")
+            await self._send_message(update.message, "Please upload a .txt file with domains (one per line).")
             return
 
         self.cancel_event.clear()
         self.is_running = True
         self.progress_message_id = None
+        self.last_percentage = -1
 
         try:
             file = await context.bot.get_file(document.file_id)
@@ -158,7 +188,7 @@ class TelegramBot:
                 domains = [d.strip() for d in f if d.strip()]
             
             if not domains:
-                await update.message.reply_text("No valid domains found in the uploaded file.")
+                await self._send_message(update.message, "No valid domains found in the uploaded file.")
                 return
 
             await self.subfinder.run_async(domains, is_file=False, cancel_event=self.cancel_event, bot=self)
@@ -168,31 +198,32 @@ class TelegramBot:
             except Exception as e:
                 print(f"Error deleting temporary file {file_path}: {str(e)}")
         except Exception as e:
-            await update.message.reply_text(f"Error processing uploaded file: {str(e)}")
+            await self._send_message(update.message, f"Error processing uploaded file: {str(e)}")
         finally:
             self.is_running = False
             self.progress_message_id = None
+            self.last_percentage = -1
 
     async def send_message(self, message):
-        try:
-            await self.app.bot.send_message(chat_id=self.chat_id, text=message)
-            print("Telegram notification sent successfully.")
-        except Exception as e:
-            print(f"Error sending Telegram notification: {str(e)}")
+        await self._send_message(None, message)
 
     async def send_file(self, file_path, subdomain_count=0):
-        try:
-            with open(file_path, 'rb') as file:
-                caption = f"Found {subdomain_count} subdomains"
-                await self.app.bot.send_document(
-                    chat_id=self.chat_id,
-                    document=file,
-                    filename=os.path.basename(file_path),
-                    caption=caption
-                )
-            print(f"Telegram file sent successfully: {file_path}")
-        except Exception as e:
-            print(f"Error sending Telegram file: {str(e)}")
+        for attempt in range(3):
+            try:
+                with open(file_path, 'rb') as file:
+                    caption = f"Found {subdomain_count} subdomains"
+                    await self.app.bot.send_document(
+                        chat_id=self.chat_id,
+                        document=file,
+                        filename=os.path.basename(file_path),
+                        caption=caption
+                    )
+                print(f"Telegram file sent successfully: {file_path}")
+                break
+            except Exception as e:
+                print(f"Error sending Telegram file (attempt {attempt + 1}/3): {str(e)}")
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt)
 
     def run(self):
         self.app.add_handler(CommandHandler("start", self.start))
